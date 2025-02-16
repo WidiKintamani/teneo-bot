@@ -2,5 +2,4 @@ requests
 shareithub
 aiohttp
 colorama
-fake_useragent
-websocket-client
+tabulate
