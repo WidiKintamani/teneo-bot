@@ -25,7 +25,7 @@ class TeneoBot:
         """Membaca daftar akun dari account.txt"""
         accounts = []
         try:
-            with open("account.txt", "r") as file:
+            with open("accounts.txt", "r") as file:
                 for line in file:
                     line = line.strip()
                     if line:
