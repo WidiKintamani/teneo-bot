@@ -1,271 +1,154 @@
-import websocket
-import threading
-import json
-import time
 import shareithub
-import requests
-from fake_useragent import UserAgent
-from colorama import init, Fore
-from datetime import datetime
+import asyncio
+import json
+import os
+import sys
 from shareithub import shareithub
-
-shareithub()
+from aiohttp import ClientSession, ClientTimeout
+from datetime import datetime, timezone
+from colorama import Fore, Style, init
+from tabulate import tabulate
 
 init(autoreset=True)
-
-class BotAPI:
-    def __init__(self, url, stats_url):
-        self.url = url
-        self.stats_url = stats_url 
-        self.access_token = None
-        self.ua = UserAgent()  
-        self.retry_delay = 60  
-        self.connection_delay = 3  
-
-    def log(self, account_name, level, message):
-        """
-        Fungsi untuk mencetak log dengan level dan format waktu yang lebih mudah dibaca.
-        """
-        time_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        level_colors = {
-            "INFO": Fore.CYAN,
-            "SUCCESS": Fore.GREEN,
-            "ERROR": Fore.RED,
-            "WARNING": Fore.YELLOW,
+shareithub()
+class TeneoBot:
+    def __init__(self):
+        self.api_key = "OwAG3kib1ivOJG4Y0OCZ8lJETa6ypvsDtGmdhcjB"
+        self.headers = {
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36"
         }
-        print(f"{level_colors.get(level, Fore.WHITE)}[{time_stamp}] [{account_name}] [{level}] {message}")
+        self.accounts = self.load_accounts()
+        self.account_data = {}
 
-    def format_user_stats(self, stats):
-        """
-        Format statistik pengguna agar lebih mudah dibaca di terminal.
-        """
-        formatted_stats = [
-            f"{'Heartbeats:':<20} {stats['heartbeats']}",
-            f"{'Points Today:':<20} {stats['points_today']}",
-            f"{'Total Points:':<20} {stats['points_total']}",
-            f"{'User ID:':<20} {stats['user_id']}",
-            f"{'Heartbeats Genesis Snapshot:':<20} {stats['heartbeats_genesis_snapshot']}",
-            f"{'Total Referral Points:':<20} {stats['total_referral_points']}",
-            f"{'Total Referrals:':<20} {stats['total_referrals']}",
-        ]
-        
-        
-        breakdown = stats.get('points_breakdown', [])
-        for category in breakdown:
-            formatted_stats.append(f"{category['category']:<20}: {category['value']} points ({category['percentage']}%)")
-        
-        return "\n".join(formatted_stats)
-
-    def connect_websocket(self, access_token, account_name):
-        """
-        Menghubungkan bot ke WebSocket menggunakan access token tanpa batasan retry.
-        """
-        if not access_token:
-            self.log(account_name, "ERROR", "Tidak ada token akses. Silakan login terlebih dahulu.")
-            return
-
-        ws_url = f"wss://secure.ws.teneo.pro/websocket?accessToken={access_token}&version=v0.2"
-
-        def on_message(ws, message):
-            self.log(account_name, "INFO", f"Received message: {message}")
-
-        def on_error(ws, error):
-            self.log(account_name, "ERROR", f"Error: {error}")
-
-        def on_close(ws, close_status_code, close_msg):
-            self.log(account_name, "WARNING", "WebSocket closed")
-
-        def on_open(ws):
-            self.log(account_name, "SUCCESS", "WebSocket connected")
-            self.send_ping(ws, account_name)
-
-        headers = {
-            "Host": "secure.ws.teneo.pro",
-            "Connection": "Upgrade",
-            "Pragma": "no-cache",
-            "Cache-Control": "no-cache",
-            "User-Agent": self.ua.random,
-            "Upgrade": "websocket",
-            "Origin": "chrome-extension://emcclcoaglgcpoognfiggmhnhgabppkm",
-            "Sec-WebSocket-Version": "13",
-            "Accept-Encoding": "gzip, deflate, br, zstd",
-            "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
-            "Sec-WebSocket-Key": "g0PDYtLWQOmaBE5upOBXew==",
-            "Sec-WebSocket-Extensions": "permessage-deflate; client_max_window_bits",
-        }
-
-
-        def try_connect():
-            attempt = 0
-            while True:
-                self.log(account_name, "WARNING", f"Mencoba koneksi ke WebSocket... Percobaan ke-{attempt + 1}")
-                ws = websocket.WebSocketApp(ws_url,
-                                            header=headers,
-                                            on_message=on_message,
-                                            on_error=on_error,
-                                            on_close=on_close,
-                                            on_open=on_open)
-
-                
-                ws.run_forever()
-
-                
-                if ws.sock and ws.sock.connected:
-                    self.log(account_name, "SUCCESS", "WebSocket berhasil terhubung!")
-                    break
-                else:
-                    self.log(account_name, "ERROR", "WebSocket gagal terhubung. Mencoba lagi...")
-                    time.sleep(self.retry_delay)
-                    attempt += 1
-
-        
-        time.sleep(self.connection_delay)
-        try_connect()
-
-    def send_ping(self, ws, account_name):
-        """
-        Mengirim pesan {"type": "PING"} setiap 30 detik untuk memastikan WebSocket tetap terhubung.
-        """
-        def ping():
-            try:
-                ws.send(json.dumps({"type": "PING"})) 
-                self.log(account_name, "INFO", "Sent PING message.")
-            except Exception as e:
-                self.log(account_name, "ERROR", f"Error saat mengirim PING: {e}")
-            threading.Timer(30, ping).start() 
-
-        ping()
-
-    def get_token(self, email, password, account_name):
-        """
-        Mendapatkan token dan userId menggunakan API login dengan email dan password.
-        """
-        payload = {
-            "grant_type": "password",
-            "email": email,
-            "password": password
-        }
-
-        headers = {
-            "authority": "auth.teneo.pro",
-            "method": "POST",
-            "path": "/api/login",
-            "scheme": "https",
-            "accept": "application/json, text/plain, */*",
-            "accept-encoding": "gzip, deflate, br, zstd",
-            "accept-language": "en-US,en;q=0.9,id;q=0.8",
-            "content-length": "58",
-            "content-type": "application/json",
-            "origin": "https://dashboard.teneo.pro",
-            "priority": "u=1, i",
-            "referer": "https://dashboard.teneo.pro/",
-            "sec-ch-ua": "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"",
-            "sec-ch-ua-mobile": "?1",
-            "sec-ch-ua-platform": "\"Android\"",
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-site",
-            "user-agent": self.ua.random,  
-            "x-api-key": "OwAG3kib1ivOJG4Y0OCZ8lJETa6ypvsDtGmdhcjA", 
-        }
-
+    def load_accounts(self):
+        """Membaca daftar akun dari account.txt"""
+        accounts = []
         try:
-            response = requests.post(self.url, headers=headers, json=payload)
-            response.raise_for_status()
-
- 
-            data = response.json()
-            self.access_token = data.get("access_token")
-            
-            if self.access_token:
-                self.log(account_name, "SUCCESS", f"Login berhasil! Akses Token: {self.access_token}")
-                return self.access_token
-            else:
-                self.log(account_name, "ERROR", "Gagal mendapatkan token akses.")
-                return None
-        except requests.exceptions.RequestException as e:
-            self.log(account_name, "ERROR", f"Error saat login: {e}")
-            return None
-
-    def get_user_stats(self, access_token, account_name):
-        """
-        Mendapatkan statistik pengguna menggunakan access token.
-        """
-        headers = {
-            "authority": "api.teneo.pro",
-            "method": "GET",
-            "path": "/api/users/stats",
-            "scheme": "https",
-            "accept": "application/json, text/plain, */*",
-            "accept-encoding": "gzip, deflate, br, zstd",
-            "accept-language": "en-US,en;q=0.9,id;q=0.8",
-            "authorization": f"Bearer {access_token}",
-            "origin": "https://dashboard.teneo.pro",
-            "priority": "u=1, i",
-            "referer": "https://dashboard.teneo.pro/",
-            "sec-ch-ua": "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"",
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": "\"Windows\"",
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-site",
-            "user-agent": self.ua.random,  
-        }
-
-        try:
-            response = requests.get(self.stats_url, headers=headers)
-            response.raise_for_status()
-
-            
-            stats = response.json()
-            formatted_stats = self.format_user_stats(stats)
-            self.log(account_name, "INFO", f"User Stats:\n{formatted_stats}")
-            return stats
-        except requests.exceptions.RequestException as e:
-            self.log(account_name, "ERROR", f"Error saat mendapatkan statistik pengguna: {e}")
-            return None
-
-    def login_from_file(self, file_path):
-        """
-        Membaca akun dari file dan mencoba login untuk setiap akun secara paralel.
-        """
-        try:
-            with open(file_path, "r") as file:
-                accounts = []
+            with open("account.txt", "r") as file:
                 for line in file:
                     line = line.strip()
-                    if line:  
+                    if line:
                         email, password = line.split(":")
-                        account_name = email.split("@")[0]  
-                        account = {'email': email, 'password': password, 'account_name': account_name}
-                        accounts.append(account)
+                        accounts.append((email, password))
+        except FileNotFoundError:
+            print(f"{Fore.RED}[ERROR] File account.txt tidak ditemukan!{Style.RESET_ALL}")
+        return accounts
 
-                threads = []
-                for account in accounts:
-                    
-                    thread = threading.Thread(target=self.login_and_connect, args=(account['email'], account['password'], account['account_name']))
-                    thread.start()
-                    threads.append(thread)
+    async def user_login(self, email: str, password: str):
+        """Melakukan login untuk mendapatkan token"""
+        url = "https://auth.teneo.pro/api/login"
+        data = json.dumps({"email": email, "password": password})
+        headers = {**self.headers, "Content-Type": "application/json", "X-Api-Key": self.api_key}
 
-                
-                for thread in threads:
-                    thread.join()
+        async with ClientSession(timeout=ClientTimeout(total=120)) as session:
+            try:
+                async with session.post(url, headers=headers, data=data) as response:
+                    result = await response.json()
+                    if response.status == 200 and "access_token" in result:
+                        print(f"{Fore.GREEN}[ {email} ] ✅ GET Access Token Success{Style.RESET_ALL}")
+                        return result["access_token"]
+                    else:
+                        print(f"{Fore.RED}[ {email} ] ❌ Login Failed: {result}{Style.RESET_ALL}")
+                        return None
+            except Exception as e:
+                print(f"{Fore.RED}[ {email} ] ❌ Error Login: {e}{Style.RESET_ALL}")
+                return None
 
-        except Exception as e:
-            self.log("Global", "ERROR", f"Error saat membaca file: {e}")
-            
-    def login_and_connect(self, email, password, account_name):
-        """
-        Login dan menghubungkan WebSocket untuk setiap akun.
-        """
-        access_token = self.get_token(email, password, account_name)
-        if access_token:
-            self.get_user_stats(access_token, account_name) 
-            self.connect_websocket(access_token, account_name)
+    async def connect_websocket(self, email: str, token: str):
+        """Menghubungkan WebSocket dengan token hasil login"""
+        wss_url = f"wss://secure.ws.teneo.pro/websocket?accessToken={token}&version=v0.2"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+            "Upgrade": "websocket",
+            "Connection": "Upgrade"
+        }
 
+        while True:
+            try:
+                async with ClientSession(timeout=ClientTimeout(total=300)) as session:
+                    async with session.ws_connect(wss_url, headers=headers) as wss:
+                        print(f"{Fore.GREEN}[ {email} ] ✅ WebSocket Connected{Style.RESET_ALL}")
+
+                        async def send_heartbeat():
+                            while True:
+                                await asyncio.sleep(10)
+                                await wss.send_json({"type": "PING"})
+                                self.print_ping_log(email)
+                                await self.countdown_timer(email)  # Countdown per akun
+                                self.display_status()  # Update tabel status akun
+
+                        asyncio.create_task(send_heartbeat())
+
+                        async for msg in wss:
+                            response = json.loads(msg.data)
+
+                            if response.get("message") in ["Connected successfully", "Pulse from server"]:
+                                self.account_data[email] = {
+                                    "Email": email,
+                                    "Points Today": response.get("pointsToday", 0),
+                                    "Total Points": response.get("pointsTotal", 0),
+                                    "Last Update": datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+                                }
+
+            except Exception as e:
+                print(f"{Fore.RED}[ {email} ] ❌ WebSocket Disconnected, Reconnecting in 5s...{Style.RESET_ALL}")
+                await asyncio.sleep(5)
+
+    def print_ping_log(self, email):
+        """Menampilkan log PING secara rapi"""
+        print(f"\n{Fore.CYAN}[ {email} ] 🔄 Sent PING to WebSocket{Style.RESET_ALL}")
+
+    async def countdown_timer(self, email):
+        """Menampilkan countdown sebelum update log terbaru"""
+        for i in range(5, 0, -1):
+            sys.stdout.write(f"\r{Fore.YELLOW}[ {email} ] 🔄 Refreshing in {i} sec...  ")
+            sys.stdout.flush()
+            await asyncio.sleep(1)
+        sys.stdout.write("\r" + " " * 50 + "\r")  # Clear line setelah countdown selesai
+
+    def display_status(self):
+        """Membersihkan layar dan menampilkan status akun dalam tabel"""
+        os.system("cls" if os.name == "nt" else "clear")  # Auto Clear Log
+
+        if not self.account_data:
+            return
+
+        table_data = [
+            [
+                Fore.CYAN + v["Email"] + Style.RESET_ALL,
+                Fore.YELLOW + str(v["Points Today"]) + Style.RESET_ALL,
+                Fore.GREEN + str(v["Total Points"]) + Style.RESET_ALL,
+                Fore.MAGENTA + v["Last Update"] + Style.RESET_ALL
+            ]
+            for v in self.account_data.values()
+        ]
+
+        print("\n" + Fore.YELLOW + "=" * 80)
+        print(Fore.GREEN + "✨ TENEO BOT STATUS ✨".center(80))
+        print(Fore.YELLOW + "=" * 80 + Style.RESET_ALL)
+        print(tabulate(
+            table_data,
+            headers=[Fore.CYAN + "Email" + Style.RESET_ALL, Fore.YELLOW + "Points Today" + Style.RESET_ALL, Fore.GREEN + "Total Points" + Style.RESET_ALL, Fore.MAGENTA + "Last Update" + Style.RESET_ALL],
+            tablefmt="double_outline"
+        ))
+        print("\n" + Fore.YELLOW + "=" * 80)
+
+    async def process_accounts(self):
+        """Proses login akun dan koneksi WebSocket"""
+        tasks = []
+        for email, password in self.accounts:
+            token = await self.user_login(email, password)
+            if token:
+                tasks.append(self.connect_websocket(email, token))
+
+        if tasks:
+            await asyncio.gather(*tasks)
+
+    async def main(self):
+        print(f"{Fore.YELLOW}[ INFO ] 🔢 Total Akun: {len(self.accounts)}{Style.RESET_ALL}")
+        await self.process_accounts()
 
 if __name__ == "__main__":
-
-    bot = BotAPI("https://auth.teneo.pro/api/login", "https://api.teneo.pro/api/users/stats")
-
-    bot.login_from_file("accounts.txt")
+    bot = TeneoBot()
+    asyncio.run(bot.main())
